@@ -1,6 +1,5 @@
 install.packages(c("class", "caret", "e1071"))
 title: "Assignment 2: k-NN Classification (Universal Bank)"
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
