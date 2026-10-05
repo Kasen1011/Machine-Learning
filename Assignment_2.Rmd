@@ -1,0 +1,233 @@
+---
+title: "Assignment 2: k-NN Classification (Universal Bank)"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Load packages and data
+
+```{r}
+# install.packages(c("class", "caret", "e1071"))  # run once if needed
+library(class)   # knn()
+library(caret)   # preProcess(), confusionMatrix()
+
+bank <- read.csv("UniversalBank.csv")
+dim(bank)
+str(bank)
+table(bank$Personal.Loan)   # 480 of 5000 accepted (9.6%)
+```
+
+## Data preparation
+
+Drop `ID` and `ZIP.Code`, turn `Education` (3 categories) into dummy variables,
+and make the outcome a factor with success class = 1.
+
+```{r}
+bank <- bank[, !(names(bank) %in% c("ID", "ZIP.Code"))]
+
+# Dummy variables for Education (keep all three, as in the new-customer spec)
+bank$Education <- factor(bank$Education, levels = c(1, 2, 3))
+edu_dummies <- model.matrix(~ Education - 1, data = bank)
+colnames(edu_dummies) <- c("Education_1", "Education_2", "Education_3")
+bank <- cbind(bank[, names(bank) != "Education"], edu_dummies)
+
+# Outcome as factor; "1" = loan accepted (success class)
+bank$Personal.Loan <- factor(bank$Personal.Loan, levels = c(0, 1))
+
+predictors <- setdiff(names(bank), "Personal.Loan")
+predictors
+```
+
+## Partition: 60% training, 40% validation
+
+```{r}
+set.seed(123)
+train_index <- sample(seq_len(nrow(bank)), size = 0.6 * nrow(bank))
+train_df <- bank[train_index, ]
+valid_df <- bank[-train_index, ]
+
+nrow(train_df); nrow(valid_df)
+```
+
+## Normalize predictors
+
+k-NN uses distances, so predictors are standardized. The normalization
+parameters are learned from the **training set only** and then applied to the
+validation set and to the new customer.
+
+```{r}
+norm_values <- preProcess(train_df[, predictors], method = c("center", "scale"))
+
+train_norm <- predict(norm_values, train_df[, predictors])
+valid_norm <- predict(norm_values, valid_df[, predictors])
+```
+
+## New customer
+
+```{r}
+new_customer <- data.frame(
+  Age = 40, Experience = 10, Income = 84, Family = 2, CCAvg = 2,
+  Mortgage = 0, Securities.Account = 0, CD.Account = 0,
+  Online = 1, CreditCard = 1,
+  Education_1 = 0, Education_2 = 1, Education_3 = 0
+)
+new_customer <- new_customer[, predictors]          # same column order as training
+new_customer_norm <- predict(norm_values, new_customer)
+```
+
+## Question 1: Classify the new customer with k = 1
+
+With `knn()`, the predicted class is the majority vote of the k neighbors,
+which is equivalent to a 0.5 cutoff on the proportion of neighbors in class 1.
+
+```{r}
+pred_k1 <- knn(train = train_norm,
+               test  = new_customer_norm,
+               cl    = train_df$Personal.Loan,
+               k     = 1)
+pred_k1
+```
+
+**Answer:** The customer is classified as `r as.character(pred_k1)`
+(`0` = does not accept the loan, `1` = accepts the loan).
+
+## Question 2: Choosing k
+
+Fit k-NN for k = 1 to 20 on the training data and measure accuracy on the
+validation data. Very small k overfits (follows noise in the training data);
+very large k ignores the predictor information (drifts toward always predicting
+the majority class).
+
+```{r}
+set.seed(123)   # knn breaks ties at random
+k_values <- 1:20
+accuracy_df <- data.frame(k = k_values, accuracy = NA)
+
+for (i in seq_along(k_values)) {
+  pred <- knn(train = train_norm, test = valid_norm,
+              cl = train_df$Personal.Loan, k = k_values[i])
+  accuracy_df$accuracy[i] <- confusionMatrix(pred, valid_df$Personal.Loan,
+                                             positive = "1")$overall["Accuracy"]
+}
+accuracy_df
+
+plot(accuracy_df$k, accuracy_df$accuracy, type = "b", pch = 19,
+     xlab = "k", ylab = "Validation accuracy",
+     main = "Validation accuracy by k")
+
+best_k <- accuracy_df$k[which.max(accuracy_df$accuracy)]
+best_k
+```
+
+**Answer:** The best k is `r best_k`, the value with the highest validation
+accuracy. It is large enough to smooth out noise from single neighbors
+(avoiding overfitting) but small enough to still use the local structure in
+the predictors.
+
+## Question 3: Confusion matrix for the validation data with the best k
+
+```{r}
+pred_valid_best <- knn(train = train_norm, test = valid_norm,
+                       cl = train_df$Personal.Loan, k = best_k)
+confusionMatrix(pred_valid_best, valid_df$Personal.Loan, positive = "1")
+```
+
+## Question 4: Classify the new customer with the best k
+
+```{r}
+pred_best <- knn(train = train_norm, test = new_customer_norm,
+                 cl = train_df$Personal.Loan, k = best_k)
+pred_best
+```
+
+**Answer:** Using k = `r best_k`, the customer is classified as
+`r as.character(pred_best)`.
+
+## Question 5: Repartition into training (50%), validation (30%), test (20%)
+
+```{r}
+set.seed(123)
+n <- nrow(bank)
+idx <- sample(seq_len(n))
+
+train2_idx <- idx[1:(0.5 * n)]
+valid2_idx <- idx[(0.5 * n + 1):(0.8 * n)]
+test2_idx  <- idx[(0.8 * n + 1):n]
+
+train2 <- bank[train2_idx, ]
+valid2 <- bank[valid2_idx, ]
+test2  <- bank[test2_idx, ]
+
+c(train = nrow(train2), valid = nrow(valid2), test = nrow(test2))
+
+# Normalize using the new training set only
+norm_values2 <- preProcess(train2[, predictors], method = c("center", "scale"))
+train2_norm <- predict(norm_values2, train2[, predictors])
+valid2_norm <- predict(norm_values2, valid2[, predictors])
+test2_norm  <- predict(norm_values2, test2[, predictors])
+```
+
+### Confusion matrices with the chosen k
+
+```{r}
+# Training set (training data predicting itself)
+pred_train2 <- knn(train2_norm, train2_norm, cl = train2$Personal.Loan, k = best_k)
+cm_train <- confusionMatrix(pred_train2, train2$Personal.Loan, positive = "1")
+
+# Validation set
+pred_valid2 <- knn(train2_norm, valid2_norm, cl = train2$Personal.Loan, k = best_k)
+cm_valid <- confusionMatrix(pred_valid2, valid2$Personal.Loan, positive = "1")
+
+# Test set
+pred_test2 <- knn(train2_norm, test2_norm, cl = train2$Personal.Loan, k = best_k)
+cm_test <- confusionMatrix(pred_test2, test2$Personal.Loan, positive = "1")
+
+cm_train
+cm_valid
+cm_test
+```
+
+### Side-by-side comparison
+
+```{r}
+summary_tbl <- data.frame(
+  Set         = c("Training", "Validation", "Test"),
+  Accuracy    = c(cm_train$overall["Accuracy"],
+                  cm_valid$overall["Accuracy"],
+                  cm_test$overall["Accuracy"]),
+  Sensitivity = c(cm_train$byClass["Sensitivity"],
+                  cm_valid$byClass["Sensitivity"],
+                  cm_test$byClass["Sensitivity"]),
+  Specificity = c(cm_train$byClass["Specificity"],
+                  cm_valid$byClass["Specificity"],
+                  cm_test$byClass["Specificity"])
+)
+summary_tbl[, -1] <- round(summary_tbl[, -1], 4)
+summary_tbl
+```
+
+### Comments on the differences
+
+*(Edit this discussion to match your actual numbers.)*
+
+- **Training set performs best.** Each training record is among its own nearest
+  neighbors (distance 0), so the model is partly "remembering" the answer. This
+  makes training accuracy optimistic, especially for small k.
+- **Validation performance is lower** because those records were not used to
+  build the model. However, the validation set was also used to *choose* k, so
+  its accuracy is still slightly optimistic.
+- **Test set gives the most honest estimate** of how the model will perform on
+  new customers, since it played no role in fitting the model or choosing k.
+  It is usually close to, or a bit below, the validation accuracy.
+- **Sensitivity (catching loan acceptors) is the weakest metric** across all
+  sets because only ~9.6% of customers accepted a loan; with so few positives,
+  neighbors tend to be dominated by class 0. Small differences between the
+  validation and test results also come from random variation in which
+  customers landed in each partition.
